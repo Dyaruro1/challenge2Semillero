@@ -227,26 +227,98 @@ display_size = st.sidebar.slider("Tamaño (px):", 200, 1200, 600, 50)
 
 # ==================== BUSCAR PARES ====================
 def find_slice_pairs(folder: Path, use_u16: bool):
-    suffix = "u16" if use_u16 else "u8"
+  valid_exts = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
+  suffix = "u16" if use_u16 else "u8"
+
+  def extract_idx(text: str):
+    match = re.search(r"(\d{4,})", text)
+    return int(match.group(1)) if match else None
+
+  def files_by_index(channel_folder: Path, require_suffix: bool):
+    idx_map = {}
+    for f in channel_folder.iterdir():
+      if not f.is_file():
+        continue
+      name = f.name.lower()
+      if "preview" in name or f.suffix.lower() not in valid_exts:
+        continue
+      if require_suffix and suffix not in name:
+        continue
+      idx = extract_idx(f.stem.lower()) or extract_idx(name)
+      if idx is not None:
+        idx_map[idx] = f
+    return idx_map
+
+  def find_flat_layout(require_suffix: bool):
     nuclei_files = {}
     for f in folder.iterdir():
-        name = f.name.lower()
-        if ("nuclei" in name
-                and suffix in name
-                and "preview" not in name
-                and f.suffix.lower() in {".tif", ".tiff", ".png", ".jpg", ".jpeg"}):
-            match = re.search(r"(\d{4,})", name)
-            if match:
-                idx = int(match.group(1))
-                nuclei_files[idx] = f
+      if not f.is_file():
+        continue
+      name = f.name.lower()
+      if "nuclei" not in name or "preview" in name:
+        continue
+      if f.suffix.lower() not in valid_exts:
+        continue
+      if require_suffix and suffix not in name:
+        continue
+      idx = extract_idx(name)
+      if idx is not None:
+        nuclei_files[idx] = f
+
     pairs = []
     for idx in sorted(nuclei_files.keys()):
-        nuc_path = nuclei_files[idx]
-        cyto_name = nuc_path.name.replace("nuclei", "cyto")
-        cyto_path = folder / cyto_name
-        if cyto_path.exists():
-            pairs.append((nuc_path, cyto_path, idx))
+      nuc_path = nuclei_files[idx]
+      cyto_name = re.sub(r"nuclei", "cyto", nuc_path.name, flags=re.IGNORECASE)
+      cyto_path = folder / cyto_name
+      if cyto_path.exists():
+        pairs.append((nuc_path, cyto_path, idx))
     return pairs
+
+  def find_split_layout(require_suffix: bool):
+    subdirs = [d for d in folder.iterdir() if d.is_dir()]
+    nuclei_dirs = [d for d in subdirs if "nuclei" in d.name.lower()]
+    cyto_dirs = [d for d in subdirs if "cyto" in d.name.lower()]
+    if not nuclei_dirs or not cyto_dirs:
+      return []
+
+    pairs = []
+    for nuc_dir in sorted(nuclei_dirs, key=lambda p: p.name.lower()):
+      expected_cyto_name = re.sub(
+        r"nuclei", "cyto", nuc_dir.name, flags=re.IGNORECASE
+      ).lower()
+      cyto_dir = next(
+        (d for d in cyto_dirs if d.name.lower() == expected_cyto_name),
+        None,
+      )
+      if cyto_dir is None and len(cyto_dirs) == 1:
+        cyto_dir = cyto_dirs[0]
+      if cyto_dir is None:
+        continue
+
+      nuclei_files = files_by_index(nuc_dir, require_suffix)
+      cyto_files = files_by_index(cyto_dir, require_suffix)
+      common_idxs = sorted(set(nuclei_files.keys()) & set(cyto_files.keys()))
+      for idx in common_idxs:
+        pairs.append((nuclei_files[idx], cyto_files[idx], idx))
+    return pairs
+
+  # 1) Formato original: pares en la misma carpeta
+  pairs = find_flat_layout(require_suffix=True)
+  if pairs:
+    return pairs
+
+  # 2) Formato alternativo: subcarpetas separadas por canal
+  pairs = find_split_layout(require_suffix=True)
+  if pairs:
+    return pairs
+
+  # 3) Fallback: archivos sin etiqueta u16/u8 en nombre
+  pairs = find_flat_layout(require_suffix=False)
+  if pairs:
+    return pairs
+
+  pairs = find_split_layout(require_suffix=False)
+  return pairs
 
 
 # ==================== CARGA ====================
@@ -265,10 +337,14 @@ def load_and_colorize(
     if not pairs:
         pairs = find_slice_pairs(folder, not use_u16)
         if not pairs:
-            all_files = [f.name for f in folder.iterdir()
-                         if f.suffix.lower() in {".tif", ".tiff", ".png"}]
+        all_files = [
+          str(f.relative_to(folder))
+          for f in folder.rglob("*")
+          if f.is_file() and f.suffix.lower() in {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
+        ]
             return None, None, (
                 "No se encontraron pares nuclei/cyto.\n"
+          "Formato soportado: misma carpeta o subcarpetas nuclei/cyto.\n"
                 f"Archivos ({len(all_files)}): "
                 + ", ".join(all_files[:5])
             )
