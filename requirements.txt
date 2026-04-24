@@ -1,5 +1,11 @@
 streamlit
 numpy
-Pillow
-plotly
+h5py
+scipy
 opencv-python
+pyvista
+stpyvista
+panel
+trame
+trame-vtk
+trame-vuetify
