@@ -335,19 +335,20 @@ def load_and_colorize(
 
     pairs = find_slice_pairs(folder, use_u16)
     if not pairs:
-        pairs = find_slice_pairs(folder, not use_u16)
-        if not pairs:
+      pairs = find_slice_pairs(folder, not use_u16)
+      if not pairs:
         all_files = [
           str(f.relative_to(folder))
           for f in folder.rglob("*")
-          if f.is_file() and f.suffix.lower() in {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
+          if f.is_file()
+          and f.suffix.lower() in {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
         ]
-            return None, None, (
-                "No se encontraron pares nuclei/cyto.\n"
+        return None, None, (
+          "No se encontraron pares nuclei/cyto.\n"
           "Formato soportado: misma carpeta o subcarpetas nuclei/cyto.\n"
-                f"Archivos ({len(all_files)}): "
-                + ", ".join(all_files[:5])
-            )
+          f"Archivos ({len(all_files)}): "
+          + ", ".join(all_files[:5])
+        )
 
     pairs = pairs[:n]
     gray_list = []
