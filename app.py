@@ -322,7 +322,7 @@ def _build_pyvista_plotter(
     norm_scalar = np.clip(norm_scalar, 0.0, 1.0)
     
     # Curva de transferencia no-lineal controlada por el gradiente
-    power = max(0.1, 1.5 - gradient_opacity * 0.2)
+    power = max(0.01, 1.5 - gradient_opacity * 0.2)
     alpha = np.power(norm_scalar, power) * float(opacity_scale) * 255.0
     
     # Cortes absolutos de opacidad (reemplaza 'puntos sueltos')
@@ -737,8 +737,8 @@ isomax = st.sidebar.slider(
     help="Límite superior de visibilidad. Sube para ver tejido muy denso."
 )
 gradient_opacity = st.sidebar.slider(
-    "Opacidad por gradiente", 0.0, 5.0, 2.0, 0.1,
-    help="Realza bordes celulares y estructuras de transición. Clave para histología."
+    "Opacidad por gradiente", -5.0, 10.0, 0.0, 0.1,
+    help="Realza bordes celulares y estructuras de transición. Valores negativos aclaran las caras laterales cortando ruido de base."
 )
 
 # --- Calidad de renderizado ---
