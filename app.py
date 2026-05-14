@@ -20,6 +20,8 @@ import numpy as np
 import streamlit as st
 import streamlit.components.v1 as components
 from scipy.ndimage import zoom
+import nest_asyncio
+nest_asyncio.apply()
 
 from colorization import applyCLAHE, falseColor
 
@@ -280,71 +282,61 @@ def _he_scalar_from_rgb(he_rgb: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(np.clip(scalar, 0.0, 1.0).astype(np.float32))
 
 
-def _opacity_tf(opacity_scale: float) -> list[float]:
-    x = np.linspace(0.0, 1.0, 256, dtype=np.float32)
-    # Curva sin corte duro para evitar volumen totalmente invisible.
-    tf = np.power(x, 0.45)
-    tf = tf * float(opacity_scale)
-    return np.clip(tf, 0.0, 1.0).tolist()
-
-
 def _build_pyvista_plotter(
     he_scalar: np.ndarray,
+    he_rgb: np.ndarray,
     isomin: float,
     isomax: float,
     opacity_scale: float,
-    shading: bool,
     blending_mode: str,
+    spacing: tuple[float, float, float],
+    gradient_opacity: float,
 ) -> pv.Plotter:
     """
-    Construye volumen para PyVista.
-
-    Conversiones de ejes:
-    - he_scalar llega como (Z, Y, X)
-    - VTK espera (X, Y, Z)
+    Construye volumen para PyVista emitiendo colores reales de Hematoxilina y Eosina.
+    Las "telas negras" ocurren por colisiones de Shading y mapas de color equivocados.
+    Aquí construimos explícitamente un arreglo RGBA para el motor VTK.
     """
-    scalar_xyz = np.transpose(he_scalar, (2, 1, 0))
-
     grid = pv.ImageData()
-    # Point data suele ser mas estable para volume rendering en VTK.
-    grid.dimensions = np.array(scalar_xyz.shape)
+    z_dim, y_dim, x_dim = he_scalar.shape
+    grid.dimensions = (x_dim, y_dim, z_dim)
     grid.origin = (0.0, 0.0, 0.0)
-    grid.spacing = (1.0, 1.0, 1.0)
-    grid.point_data["he"] = scalar_xyz.ravel(order="F")
+    grid.spacing = (spacing[2], spacing[1], spacing[0])
+
+    # Convertir el mapa de colores puro computado a RGBA 
+    rgba = np.empty((z_dim, y_dim, x_dim, 4), dtype=np.uint8)
+    rgba[..., :3] = he_rgb
+
+    # Derivamos opacidad analítica usando nuestro mapa de densidad escalar normalizado
+    norm_scalar = (he_scalar - isomin) / (isomax - isomin + 1e-8)
+    norm_scalar = np.clip(norm_scalar, 0.0, 1.0)
+    
+    # Curva de transferencia no-lineal controlada por el gradiente
+    power = max(0.1, 1.5 - gradient_opacity * 0.2)
+    alpha = np.power(norm_scalar, power) * float(opacity_scale) * 255.0
+    
+    # Cortes absolutos de opacidad (reemplaza 'puntos sueltos')
+    alpha[he_scalar < isomin] = 0.0
+    rgba[..., 3] = np.clip(alpha, 0, 255).astype(np.uint8)
+
+    # Flatten garantizando el mapeo volumétrico estricto de VTK Fortran: X rápido, luego Y, luego Z
+    flat_rgba = np.empty((z_dim * y_dim * x_dim, 4), dtype=np.uint8)
+    for c in range(4):
+        flat_rgba[:, c] = np.transpose(rgba[..., c], (2, 1, 0)).ravel(order="F")
+
+    # Mapeo unificado de colores directo de 4 canales
+    grid.point_data["he_rgba"] = flat_rgba
 
     plotter = pv.Plotter(window_size=[1100, 820], off_screen=True)
     plotter.set_background("#f5f6fb")
 
     plotter.add_volume(
         grid,
-        scalars="he",
-        clim=[float(isomin), float(isomax)],
-        cmap=HE_CMAP,
-        opacity=_opacity_tf(opacity_scale),
-        shade=bool(shading),
-        ambient=0.55,
-        diffuse=0.45,
-        specular=0.00,
-        specular_power=10.0,
+        scalars="he_rgba",
+        shade=False,  # El shading causa que volúmenes RGBA puros emitan "telas o sombras negras"
         mapper="smart",
         blending=blending_mode,
     )
-
-    # Superficie de apoyo: ayuda a visualizar estructura cuando el ray-casting
-    # del navegador/driver se degrada o queda demasiado tenue.
-    try:
-        contour_levels = [0.35, 0.55, 0.75]
-        surface = grid.contour(isosurfaces=contour_levels, scalars="he")
-        if surface.n_points > 0:
-            plotter.add_mesh(
-                surface,
-                color="#e08cc6",
-                opacity=0.20,
-                smooth_shading=True,
-                show_scalar_bar=False,
-            )
-    except Exception:
-        pass
 
     plotter.camera_position = "iso"
     return plotter
@@ -415,7 +407,7 @@ def _source_ui() -> tuple[str | None, bytes | None, str | None]:
     uploaded = st.sidebar.file_uploader("Sube archivo .h5/.hdf5", type=["h5", "hdf5"])
     local_path = st.sidebar.text_input(
         "O ruta local",
-        value=r"D:\Datasets\PCa_Bx_3Dpathology\C001_B\data\data.h5",
+        value=r"C:\Users\TEMP.DESKTOP-AAS1OV7.014\Documents\Github\data\data.h5",
     )
 
     mode: str | None = None
@@ -719,16 +711,41 @@ if vmax <= vmin:
 
 p10, p99 = np.percentile(he_scalar_norm, [10, 99])
 
-st.sidebar.markdown("### Render PyVista")
-opacity_scale = st.sidebar.slider("Opacidad", 0.20, 4.00, 1.80, 0.05)
-isomin = st.sidebar.slider("isomin", vmin, vmax, float(p10))
-isomax = st.sidebar.slider("isomax", vmin, vmax, float(p99))
-blend_mode = st.sidebar.selectbox(
-    "Blending",
-    options=["maximum", "composite", "additive"],
-    index=1,
+st.sidebar.markdown("### Render 3D Médico (itkwidgets)")
+
+# --- Opacidad y clipping ---
+opacity_scale = st.sidebar.slider(
+    "Opacidad global", 0.10, 3.00, 1.40, 0.05,
+    help="Controla la densidad visual del volumen. Valores >1.5 para tejido denso."
 )
-use_shading = st.sidebar.checkbox("Shading", value=False)
+isomin = st.sidebar.slider(
+    "Clip mínimo (isomin)", float(vmin), float(vmax), float(p10), 0.005,
+    help="Voxeles por debajo de este valor son transparentes (suprime fondo)."
+)
+isomax = st.sidebar.slider(
+    "Clip máximo (isomax)", float(vmin), float(vmax), float(p99), 0.005,
+    help="Límite superior de visibilidad. Sube para ver tejido muy denso."
+)
+gradient_opacity = st.sidebar.slider(
+    "Opacidad por gradiente", 0.0, 5.0, 2.0, 0.1,
+    help="Realza bordes celulares y estructuras de transición. Clave para histología."
+)
+
+# --- Calidad de renderizado ---
+blend_mode = st.sidebar.selectbox(
+    "Modo de Fusión (Blending)",
+    options=["composite", "maximum", "additive", "minimum", "average"],
+    index=0,
+    help="Composite es el ray casting estándar. Maximum ayuda a ver estructuras intensas."
+)
+
+# --- Spacing físico (anisotrópico) ---
+st.sidebar.markdown("#### Spacing físico (micras/voxel)")
+sz = st.sidebar.number_input("Spacing Z", min_value=0.1, max_value=50.0, value=3.0, step=0.1,
+    help="Separación entre slices. Típico H&E: 3-10 µm/slice.")
+sy = st.sidebar.number_input("Spacing Y", min_value=0.1, max_value=10.0, value=1.0, step=0.1)
+sx = st.sidebar.number_input("Spacing X", min_value=0.1, max_value=10.0, value=1.0, step=0.1)
+voxel_spacing = (float(sz), float(sy), float(sx))
 
 if isomax <= isomin:
     st.error("isomax debe ser mayor que isomin.")
@@ -753,26 +770,25 @@ c3.image(he_rgb[preview_idx], caption="FalseColor H&E", use_container_width=True
 with st.spinner("Renderizando volumen 3D con PyVista..."):
     plotter = _build_pyvista_plotter(
         he_scalar=he_scalar_norm,
+        he_rgb=he_rgb,
         isomin=float(isomin),
         isomax=float(isomax),
         opacity_scale=float(opacity_scale),
-        shading=bool(use_shading),
         blending_mode=str(blend_mode),
+        spacing=voxel_spacing,
+        gradient_opacity=float(gradient_opacity)
     )
 
-# Viewer interactivo embebiendo HTML exportado por PyVista.
-# Esto evita limitaciones del backend panel de stpyvista con volumenes en Windows.
+st.success("Renderizando con PyVista WebGL completado. Interactúa directamente en el panel.")
 try:
     html_obj = plotter.export_html(filename=None)
     html_str = html_obj.read() if hasattr(html_obj, "read") else str(html_obj)
     components.html(html_str, height=840)
 except Exception as exc:
-    st.warning(
-        "No se pudo abrir el visor interactivo HTML; se muestra una vista estatica de respaldo."
-    )
+    st.warning("No se pudo iniciar el WebGL embebido con stpyvista. Fallback a captura estática.")
     screenshot = plotter.screenshot(return_img=True)
-    st.image(screenshot, caption="Fallback estatico del volumen", use_container_width=True)
-    st.caption(f"Detalle tecnico: {exc}")
+    st.image(screenshot, caption="Vista estática", use_container_width=True)
+    st.caption(f"Detalle técnico: {exc}")
 
 st.markdown(
     """
