@@ -304,11 +304,21 @@ def _build_pyvista_plotter(
     grid.spacing = (spacing[2], spacing[1], spacing[0])
 
     # Convertir el mapa de colores puro computado a RGBA 
-    rgba = np.empty((z_dim, y_dim, x_dim, 4), dtype=np.uint8)
-    rgba[..., :3] = he_rgb
+    # Agregamos padding (+1 en todos los ejes) para evitar que VTK acumule opacidad artificial en las caras exteriores.
+    pad_w = ((1, 1), (1, 1), (1, 1))
+    he_scalar_pad = np.pad(he_scalar, pad_w, mode='constant', constant_values=0)
+    
+    pad_rgba = ((1, 1), (1, 1), (1, 1), (0, 0))
+    he_rgb_pad = np.pad(he_rgb, pad_rgba, mode='constant', constant_values=0)
+    
+    z_pad, y_pad, x_pad = he_scalar_pad.shape
+    grid.dimensions = (x_pad, y_pad, z_pad)
+
+    rgba = np.empty((z_pad, y_pad, x_pad, 4), dtype=np.uint8)
+    rgba[..., :3] = he_rgb_pad
 
     # Derivamos opacidad analítica usando nuestro mapa de densidad escalar normalizado
-    norm_scalar = (he_scalar - isomin) / (isomax - isomin + 1e-8)
+    norm_scalar = (he_scalar_pad - isomin) / (isomax - isomin + 1e-8)
     norm_scalar = np.clip(norm_scalar, 0.0, 1.0)
     
     # Curva de transferencia no-lineal controlada por el gradiente
@@ -316,11 +326,11 @@ def _build_pyvista_plotter(
     alpha = np.power(norm_scalar, power) * float(opacity_scale) * 255.0
     
     # Cortes absolutos de opacidad (reemplaza 'puntos sueltos')
-    alpha[he_scalar < isomin] = 0.0
+    alpha[he_scalar_pad < isomin] = 0.0
     rgba[..., 3] = np.clip(alpha, 0, 255).astype(np.uint8)
 
     # Flatten garantizando el mapeo volumétrico estricto de VTK Fortran: X rápido, luego Y, luego Z
-    flat_rgba = np.empty((z_dim * y_dim * x_dim, 4), dtype=np.uint8)
+    flat_rgba = np.empty((z_pad * y_pad * x_pad, 4), dtype=np.uint8)
     for c in range(4):
         flat_rgba[:, c] = np.transpose(rgba[..., c], (2, 1, 0)).ravel(order="F")
 

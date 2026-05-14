@@ -9,8 +9,4 @@ panel
 trame
 trame-vtk
 trame-vuetify
-itk>=5.3.0
-itkwidgets[all]
-ipython
-zarr
 nest-asyncio
