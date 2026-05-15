@@ -323,22 +323,42 @@ def _build_pyvista_plotter(
         mesh.active_texture_coordinates = _FIXED_UV.copy()
         plotter.add_mesh(mesh, texture=tex, lighting=False, show_edges=False)
 
-    def _pick_slice(arr: np.ndarray, idx: int, axis: int, margin: int = 4) -> np.ndarray:
+    def _pick_slice(
+        arr: np.ndarray,
+        idx: int,
+        axis: int,
+        search_window: int = 30,
+    ) -> np.ndarray:
         """
-        Devuelve el slice en idx.
-        Si es casi uniforme (std < 8 → fondo sin tejido),
-        avanza `margin` posiciones hacia el interior del volumen.
-        La cara aparecerá con tejido real y la discrepancia en la arista
-        es imperceptible porque esa zona ya era casi blanca.
+        Busca el slice más rico en tejido dentro de los primeros/últimos
+        `search_window` frames a lo largo de `axis`.
+
+        - idx == 0  → busca en [0, search_window)
+        - idx == -1 → busca en [n-search_window, n)
+
+        El slice con mayor std (mayor varianza de color → más tejido) gana.
+        Esto resuelve tanto caras completamente blancas (std≈0) como caras
+        con señal débil y difusa (std bajo pero > 0).
         """
-        s = np.take(arr, idx, axis=axis)
-        if float(np.std(s.astype(np.float32))) < 8.0:
-            interior = int(np.clip(
-                idx + margin if idx == 0 else idx - margin,
-                0, arr.shape[axis] - 1
-            ))
-            s = np.take(arr, interior, axis=axis)
-        return s
+        n = arr.shape[axis]
+        window = min(search_window, n)
+
+        if idx == 0:
+            candidates = range(0, window)
+        else:
+            candidates = range(max(0, n - window), n)
+
+        best_idx = int(idx) if idx >= 0 else n + int(idx)
+        best_std = -1.0
+
+        for i in candidates:
+            s = np.take(arr, i, axis=axis)
+            std = float(np.std(s.astype(np.float32)))
+            if std > best_std:
+                best_std = std
+                best_idx = i
+
+        return np.take(arr, best_idx, axis=axis)
 
     # ── CARA Z=0 (base XY) ──────────────────────────────────────
     # Image shape: (Y, X, 3) — row=Y-axis, col=X-axis
