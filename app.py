@@ -283,60 +283,123 @@ def _build_pyvista_plotter(
     spacing: tuple[float, float, float],
 ) -> pv.Plotter:
     """
-    Construye volumen para PyVista emitiendo colores reales de Hematoxilina y Eosina.
-    Las "telas negras" ocurren por colisiones de Shading y mapas de color equivocados.
-    Aquí construimos explícitamente un arreglo RGBA para el motor VTK.
+    6 caras como quads texturizados con UV consistentes en aristas compartidas.
+
+    Convención de ejes por cara:
+      Z faces  → row=Y, col=X
+      Y faces  → row=Z, col=X
+      X faces  → row=Z, col=Y
+
+    Verificación de arista ejemplo (X=0, Y=0, Z varía):
+      Cara Y=0 col=0 → he_rgb[:,0,0]
+      Cara X=0 col=0 → he_rgb[:,0,0]  ✓
     """
-    grid = pv.ImageData()
-    z_dim, y_dim, x_dim = he_scalar.shape
-    grid.dimensions = (x_dim, y_dim, z_dim)
-    grid.origin = (0.0, 0.0, 0.0)
-    grid.spacing = (spacing[2], spacing[1], spacing[0])
-
-    # Convertir el mapa de colores puro computado a RGBA 
-    # Agregamos padding (+1 en todos los ejes) para evitar que VTK acumule opacidad artificial en las caras exteriores.
-    pad_w = ((1, 1), (1, 1), (1, 1))
-    he_scalar_pad = np.pad(he_scalar, pad_w, mode='constant', constant_values=0)
-    
-    pad_rgba = ((1, 1), (1, 1), (1, 1), (0, 0))
-    he_rgb_pad = np.pad(he_rgb, pad_rgba, mode='constant', constant_values=0)
-    
-    z_pad, y_pad, x_pad = he_scalar_pad.shape
-    grid.dimensions = (x_pad, y_pad, z_pad)
-
-    rgba = np.empty((z_pad, y_pad, x_pad, 4), dtype=np.uint8)
-    rgba[..., :3] = he_rgb_pad
-
-    # Derivamos opacidad como bloque sólido (como una imagen en las caras)
-    # Todo lo que esté por encima de `isomin` será 100% opaco para no ver dentro.
-    alpha = np.zeros_like(he_scalar_pad)
-    # Ignorar de forma estricta el fondo (<= 0.0) para no generar "cubos blancos" con el espacio vacío
-    alpha[(he_scalar_pad >= isomin) & (he_scalar_pad > 0.0)] = 255.0
-
-    rgba[..., 3] = alpha.astype(np.uint8)
-
-    # Flatten garantizando el mapeo volumétrico estricto de VTK Fortran: X rápido, luego Y, luego Z
-    flat_rgba = np.empty((z_pad * y_pad * x_pad, 4), dtype=np.uint8)
-    for c in range(4):
-        flat_rgba[:, c] = np.transpose(rgba[..., c], (2, 1, 0)).ravel(order="F")
-
-    # Mapeo unificado de colores directo de 4 canales
-    grid.point_data["he_rgba"] = flat_rgba
+    z_dim, y_dim, x_dim = he_rgb.shape[:3]
+    sz, sy, sx = spacing
+    Lz, Ly, Lx = z_dim * sz, y_dim * sy, x_dim * sx
 
     plotter = pv.Plotter(window_size=[1100, 820], off_screen=True)
     plotter.set_background("#f5f6fb")
 
-    plotter.add_volume(
-        grid,
-        scalars="he_rgba",
-        shade=False,  # El shading causa que volúmenes RGBA puros emitan "telas o sombras negras"
-        mapper="smart",
-        blending="composite",
+    # ─── UV fijos: siempre los mismos 4 puntos en el mismo orden de esquinas ───
+    _FIXED_UV = np.array([
+        [0.0, 1.0],   # esquina 0 → row=0,   col=0   (top-left)
+        [1.0, 1.0],   # esquina 1 → row=0,   col=last(top-right)
+        [1.0, 0.0],   # esquina 2 → row=last,col=last (bot-right)
+        [0.0, 0.0],   # esquina 3 → row=last,col=0   (bot-left)
+    ], dtype=np.float32)
+
+    def _face_quad(
+        img_rgb: np.ndarray,
+        p_r0c0,   # mundo ↔ numpy (row=0,  col=0)
+        p_r0cN,   # mundo ↔ numpy (row=0,  col=last)
+        p_rNcN,   # mundo ↔ numpy (row=last,col=last)
+        p_rNc0,   # mundo ↔ numpy (row=last,col=0)
+    ) -> None:
+        tex  = pv.Texture(np.ascontiguousarray(img_rgb, dtype=np.uint8))
+        mesh = pv.PolyData()
+        mesh.points = np.array([p_r0c0, p_r0cN, p_rNcN, p_rNc0], dtype=float)
+        mesh.faces  = np.array([[4, 0, 1, 2, 3]])
+        mesh.active_texture_coordinates = _FIXED_UV.copy()
+        plotter.add_mesh(mesh, texture=tex, lighting=False, show_edges=False)
+
+    def _pick_slice(arr: np.ndarray, idx: int, axis: int, margin: int = 4) -> np.ndarray:
+        """
+        Devuelve el slice en idx.
+        Si es casi uniforme (std < 8 → fondo sin tejido),
+        avanza `margin` posiciones hacia el interior del volumen.
+        La cara aparecerá con tejido real y la discrepancia en la arista
+        es imperceptible porque esa zona ya era casi blanca.
+        """
+        s = np.take(arr, idx, axis=axis)
+        if float(np.std(s.astype(np.float32))) < 8.0:
+            interior = int(np.clip(
+                idx + margin if idx == 0 else idx - margin,
+                0, arr.shape[axis] - 1
+            ))
+            s = np.take(arr, interior, axis=axis)
+        return s
+
+    # ── CARA Z=0 (base XY) ──────────────────────────────────────
+    # Image shape: (Y, X, 3) — row=Y-axis, col=X-axis
+    _face_quad(
+        _pick_slice(he_rgb, 0, axis=0),
+        p_r0c0=[0,   0,  0 ],   # Y=0,  X=0
+        p_r0cN=[Lx,  0,  0 ],   # Y=0,  X=Lx
+        p_rNcN=[Lx,  Ly, 0 ],   # Y=Ly, X=Lx
+        p_rNc0=[0,   Ly, 0 ],   # Y=Ly, X=0
+    )
+
+    # ── CARA Z=Lz (tapa XY) ─────────────────────────────────────
+    _face_quad(
+        _pick_slice(he_rgb, -1, axis=0),
+        p_r0c0=[0,   0,  Lz],
+        p_r0cN=[Lx,  0,  Lz],
+        p_rNcN=[Lx,  Ly, Lz],
+        p_rNc0=[0,   Ly, Lz],
+    )
+
+    # ── CARA Y=0 (frente XZ) ────────────────────────────────────
+    # Image shape: (Z, X, 3) — row=Z-axis, col=X-axis
+    _face_quad(
+        _pick_slice(he_rgb, 0, axis=1),
+        p_r0c0=[0,  0, 0 ],   # Z=0,  X=0
+        p_r0cN=[Lx, 0, 0 ],   # Z=0,  X=Lx
+        p_rNcN=[Lx, 0, Lz],   # Z=Lz, X=Lx
+        p_rNc0=[0,  0, Lz],   # Z=Lz, X=0
+    )
+
+    # ── CARA Y=Ly (trasera XZ) ──────────────────────────────────
+    _face_quad(
+        _pick_slice(he_rgb, -1, axis=1),
+        p_r0c0=[0,  Ly, 0 ],
+        p_r0cN=[Lx, Ly, 0 ],
+        p_rNcN=[Lx, Ly, Lz],
+        p_rNc0=[0,  Ly, Lz],
+    )
+
+    # ── CARA X=0 (izquierda YZ) ─────────────────────────────────
+    # Image shape: (Z, Y, 3) — row=Z-axis, col=Y-axis
+    _face_quad(
+        _pick_slice(he_rgb, 0, axis=2),
+        p_r0c0=[0, 0,  0 ],   # Z=0,  Y=0
+        p_r0cN=[0, Ly, 0 ],   # Z=0,  Y=Ly
+        p_rNcN=[0, Ly, Lz],   # Z=Lz, Y=Ly
+        p_rNc0=[0, 0,  Lz],   # Z=Lz, Y=0
+    )
+
+    # ── CARA X=Lx (derecha YZ) ──────────────────────────────────
+    _face_quad(
+        _pick_slice(he_rgb, -1, axis=2),
+        p_r0c0=[Lx, 0,  0 ],
+        p_r0cN=[Lx, Ly, 0 ],
+        p_rNcN=[Lx, Ly, Lz],
+        p_rNc0=[Lx, 0,  Lz],
     )
 
     plotter.camera_position = "iso"
+    plotter.reset_camera()
     return plotter
-
 
 @st.cache_data(show_spinner=False)
 def list_datasets_from_path(file_path: str) -> list[dict[str, Any]]:
