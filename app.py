@@ -187,6 +187,10 @@ def _read_subset(
     dset: h5py.Dataset,
     z_start: int,
     z_stop: int,
+    y_start: int,
+    y_stop: int,
+    x_start: int,
+    x_stop: int,
     step: int,
     method: str,
     extra_indices: tuple[int, ...],
@@ -203,13 +207,13 @@ def _read_subset(
     if method == "slicing":
         selection = prefix + (
             slice(z_start, z_stop, step),
-            slice(None, None, step),
-            slice(None, None, step),
+            slice(y_start, y_stop, step),
+            slice(x_start, x_stop, step),
         )
         return np.ascontiguousarray(np.asarray(dset[selection]))
 
     # zoom: lee ROI completa y luego reescala
-    selection = prefix + (slice(z_start, z_stop), slice(None), slice(None))
+    selection = prefix + (slice(z_start, z_stop), slice(y_start, y_stop), slice(x_start, x_stop))
     subset = np.asarray(dset[selection], dtype=np.float32)
     factor = 1.0 / float(step)
     subset = zoom(subset, zoom=(factor, factor, factor), order=1, prefilter=False)
@@ -405,14 +409,20 @@ def _load_two_channels_from_path(
     nuclei_key: str,
     z_start: int,
     z_stop: int,
+    y_start: int,
+    y_stop: int,
+    x_start: int,
+    x_stop: int,
     step: int,
     method: str,
     extra_indices: tuple[int, ...],
 ) -> tuple[np.ndarray, np.ndarray]:
     with h5py.File(file_path, "r") as h5_file:
-        cyto = _read_subset(h5_file[cyto_key], z_start, z_stop, step, method, extra_indices)
+        cyto = _read_subset(
+            h5_file[cyto_key], z_start, z_stop, y_start, y_stop, x_start, x_stop, step, method, extra_indices
+        )
         nuclei = _read_subset(
-            h5_file[nuclei_key], z_start, z_stop, step, method, extra_indices
+            h5_file[nuclei_key], z_start, z_stop, y_start, y_stop, x_start, x_stop, step, method, extra_indices
         )
     return cyto, nuclei
 
@@ -423,14 +433,20 @@ def _load_two_channels_from_bytes(
     nuclei_key: str,
     z_start: int,
     z_stop: int,
+    y_start: int,
+    y_stop: int,
+    x_start: int,
+    x_stop: int,
     step: int,
     method: str,
     extra_indices: tuple[int, ...],
 ) -> tuple[np.ndarray, np.ndarray]:
     with h5py.File(io.BytesIO(file_bytes), "r") as h5_file:
-        cyto = _read_subset(h5_file[cyto_key], z_start, z_stop, step, method, extra_indices)
+        cyto = _read_subset(
+            h5_file[cyto_key], z_start, z_stop, y_start, y_stop, x_start, x_stop, step, method, extra_indices
+        )
         nuclei = _read_subset(
-            h5_file[nuclei_key], z_start, z_stop, step, method, extra_indices
+            h5_file[nuclei_key], z_start, z_stop, y_start, y_stop, x_start, x_stop, step, method, extra_indices
         )
     return cyto, nuclei
 
@@ -562,14 +578,31 @@ downsample_method = st.sidebar.radio(
 )
 
 z_max = vol_shape[0] - 1
+y_max = vol_shape[1] - 1
+x_max = vol_shape[2] - 1
+
 if z_max <= 0:
     z_range = (0, 0)
 else:
     default_end = min(z_max, 255)
     z_range = st.sidebar.slider("Rango Z", 0, z_max, (0, default_end))
 
+if y_max <= 0:
+    y_range = (0, 0)
+else:
+    y_range = st.sidebar.slider("Rango Y", 0, y_max, (0, y_max))
+
+if x_max <= 0:
+    x_range = (0, 0)
+else:
+    x_range = st.sidebar.slider("Rango X", 0, x_max, (0, x_max))
+
 z_start, z_end = int(z_range[0]), int(z_range[1])
 z_stop = z_end + 1
+y_start, y_end = int(y_range[0]), int(y_range[1])
+y_stop = y_end + 1
+x_start, x_end = int(x_range[0]), int(x_range[1])
+x_stop = x_end + 1
 
 extra_axes = cyto_meta["ndim"] - 3
 extra_indices: list[int] = []
@@ -587,7 +620,7 @@ if extra_axes > 0:
         )
         extra_indices.append(int(val))
 
-roi_shape = (z_stop - z_start, vol_shape[1], vol_shape[2])
+roi_shape = (z_stop - z_start, y_stop - y_start, x_stop - x_start)
 est_shape = _estimate_shape_after_step(roi_shape, downsample_step)
 est_voxels = int(np.prod(est_shape))
 est_peak = int(est_voxels * (4 + 4 + 3 + 4))
@@ -618,6 +651,10 @@ try:
                 nuclei_key=nuclei_key,
                 z_start=z_start,
                 z_stop=z_stop,
+                y_start=y_start,
+                y_stop=y_stop,
+                x_start=x_start,
+                x_stop=x_stop,
                 step=downsample_step,
                 method=downsample_method,
                 extra_indices=tuple(extra_indices),
@@ -629,6 +666,10 @@ try:
                 nuclei_key=nuclei_key,
                 z_start=z_start,
                 z_stop=z_stop,
+                y_start=y_start,
+                y_stop=y_stop,
+                x_start=x_start,
+                x_stop=x_stop,
                 step=downsample_step,
                 method=downsample_method,
                 extra_indices=tuple(extra_indices),
