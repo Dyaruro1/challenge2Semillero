@@ -280,11 +280,7 @@ def _build_pyvista_plotter(
     he_scalar: np.ndarray,
     he_rgb: np.ndarray,
     isomin: float,
-    isomax: float,
-    opacity_scale: float,
-    blending_mode: str,
     spacing: tuple[float, float, float],
-    gradient_opacity: float,
 ) -> pv.Plotter:
     """
     Construye volumen para PyVista emitiendo colores reales de Hematoxilina y Eosina.
@@ -311,17 +307,13 @@ def _build_pyvista_plotter(
     rgba = np.empty((z_pad, y_pad, x_pad, 4), dtype=np.uint8)
     rgba[..., :3] = he_rgb_pad
 
-    # Derivamos opacidad analítica usando nuestro mapa de densidad escalar normalizado
-    norm_scalar = (he_scalar_pad - isomin) / (isomax - isomin + 1e-8)
-    norm_scalar = np.clip(norm_scalar, 0.0, 1.0)
-    
-    # Curva de transferencia no-lineal controlada por el gradiente
-    power = max(0.01, 1.5 - gradient_opacity * 0.2)
-    alpha = np.power(norm_scalar, power) * float(opacity_scale) * 255.0
-    
-    # Cortes absolutos de opacidad (reemplaza 'puntos sueltos')
-    alpha[he_scalar_pad < isomin] = 0.0
-    rgba[..., 3] = np.clip(alpha, 0, 255).astype(np.uint8)
+    # Derivamos opacidad como bloque sólido (como una imagen en las caras)
+    # Todo lo que esté por encima de `isomin` será 100% opaco para no ver dentro.
+    alpha = np.zeros_like(he_scalar_pad)
+    # Ignorar de forma estricta el fondo (<= 0.0) para no generar "cubos blancos" con el espacio vacío
+    alpha[(he_scalar_pad >= isomin) & (he_scalar_pad > 0.0)] = 255.0
+
+    rgba[..., 3] = alpha.astype(np.uint8)
 
     # Flatten garantizando el mapeo volumétrico estricto de VTK Fortran: X rápido, luego Y, luego Z
     flat_rgba = np.empty((z_pad * y_pad * x_pad, 4), dtype=np.uint8)
@@ -339,7 +331,7 @@ def _build_pyvista_plotter(
         scalars="he_rgba",
         shade=False,  # El shading causa que volúmenes RGBA puros emitan "telas o sombras negras"
         mapper="smart",
-        blending=blending_mode,
+        blending="composite",
     )
 
     plotter.camera_position = "iso"
@@ -713,21 +705,9 @@ p10, p99 = np.percentile(he_scalar_norm, [10, 99])
 st.sidebar.markdown("### Render 3D Médico (itkwidgets)")
 
 # --- Opacidad y clipping ---
-opacity_scale = st.sidebar.slider(
-    "Opacidad global", 0.10, 3.00, 2.50, 0.05,
-    help="Controla la densidad visual del volumen. Valores >1.5 para tejido denso."
-)
 isomin = st.sidebar.slider(
     "Clip mínimo (isomin)", float(vmin), float(vmax), float(p10), 0.005,
-    help="Voxeles por debajo de este valor son transparentes (suprime fondo)."
-)
-isomax = st.sidebar.slider(
-    "Clip máximo (isomax)", float(vmin), float(vmax), float(p99), 0.005,
-    help="Límite superior de visibilidad. Sube para ver tejido muy denso."
-)
-gradient_opacity = st.sidebar.slider(
-    "Opacidad por gradiente", -50.0, 10.0, -10.0, 0.1,
-    help="Realza bordes celulares y estructuras de transición. Valores negativos aclaran las caras laterales cortando ruido de base."
+    help="Voxeles por debajo de este valor son transparentes. El resto será totalmente opaco."
 )
 
 # --- Calidad de renderizado ---
@@ -742,10 +722,6 @@ sz = st.sidebar.number_input("Spacing Z", min_value=0.1, max_value=50.0, value=1
 sy = st.sidebar.number_input("Spacing Y", min_value=0.1, max_value=10.0, value=1.0, step=0.1, disabled=True)
 sx = st.sidebar.number_input("Spacing X", min_value=0.1, max_value=10.0, value=1.0, step=0.1, disabled=True)
 voxel_spacing = (float(sz), float(sy), float(sx))
-
-if isomax <= isomin:
-    st.error("isomax debe ser mayor que isomin.")
-    st.stop()
 
 
 m1, m2, m3 = st.columns(3)
@@ -768,11 +744,7 @@ with st.spinner("Renderizando volumen 3D con PyVista..."):
         he_scalar=he_scalar_norm,
         he_rgb=he_rgb,
         isomin=float(isomin),
-        isomax=float(isomax),
-        opacity_scale=float(opacity_scale),
-        blending_mode="composite",
         spacing=voxel_spacing,
-        gradient_opacity=float(gradient_opacity)
     )
 
 st.success("Renderizando con PyVista WebGL completado. Interactúa directamente en el panel.")
