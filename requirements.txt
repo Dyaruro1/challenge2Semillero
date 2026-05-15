@@ -9,4 +9,5 @@ panel
 trame
 trame-vtk
 trame-vuetify
-nest-asyncio
+nest_asyncio2
+

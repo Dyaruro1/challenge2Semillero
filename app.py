@@ -23,7 +23,7 @@ from scipy.ndimage import zoom
 import nest_asyncio
 nest_asyncio.apply()
 
-from colorization import applyCLAHE, falseColor
+from colorization import falseColor
 
 try:
     import pyvista as pv
@@ -223,8 +223,6 @@ def _false_color_volume(
     cyto_threshold: int,
     nuc_normfactor: int,
     cyto_normfactor: int,
-    use_clahe: bool,
-    clahe_clip: float,
 ) -> np.ndarray:
     """Coloriza volumen Z,Y,X -> Z,Y,X,3 (uint8) usando falseColor por slice."""
     z_count, y_size, x_size = nuclei_vol.shape
@@ -233,10 +231,6 @@ def _false_color_volume(
     for i in range(z_count):
         nuc = nuclei_vol[i]
         cyto = cyto_vol[i]
-
-        if use_clahe:
-            nuc = applyCLAHE(nuc.astype(np.uint16), clip_limit=clahe_clip)
-            cyto = applyCLAHE(cyto.astype(np.uint16), clip_limit=clahe_clip)
 
         he_rgb[i] = falseColor(
             nuclei=nuc,
@@ -417,7 +411,7 @@ def _source_ui() -> tuple[str | None, bytes | None, str | None]:
     uploaded = st.sidebar.file_uploader("Sube archivo .h5/.hdf5", type=["h5", "hdf5"])
     local_path = st.sidebar.text_input(
         "O ruta local",
-        value=r"C:\Users\TEMP.DESKTOP-AAS1OV7.014\Documents\Github\data\data.h5",
+        value=r"C:\Users\Estudiante.DESKTOP-AAS1OV7\Downloads\data-f0.h5",
     )
 
     mode: str | None = None
@@ -660,8 +654,7 @@ else:
         "Norm cyto", 1, max_norm, int(auto_cyto_n), step_norm
     )
 
-use_clahe = st.sidebar.checkbox("CLAHE", value=False)
-clahe_clip = st.sidebar.slider("Clip CLAHE", 0.01, 0.2, 0.048, 0.005) if use_clahe else 0.048
+# CLAHE removed per user preference (kept disabled internally)
 
 
 with st.spinner("Aplicando colorizacion FalseColor H&E..."):
@@ -672,8 +665,6 @@ with st.spinner("Aplicando colorizacion FalseColor H&E..."):
         cyto_threshold=cyto_threshold,
         nuc_normfactor=nuc_normfactor,
         cyto_normfactor=cyto_normfactor,
-        use_clahe=use_clahe,
-        clahe_clip=clahe_clip,
     )
 
 he_scalar = _he_scalar_from_rgb(he_rgb)
@@ -699,8 +690,6 @@ if signal_p99 < 0.03:
             cyto_threshold=rescue_cyto_t,
             nuc_normfactor=rescue_nuc_n,
             cyto_normfactor=rescue_cyto_n,
-            use_clahe=use_clahe,
-            clahe_clip=clahe_clip,
         )
     he_scalar = _he_scalar_from_rgb(he_rgb)
     he_scalar = np.nan_to_num(he_scalar, nan=0.0, posinf=0.0, neginf=0.0)
@@ -725,7 +714,7 @@ st.sidebar.markdown("### Render 3D Médico (itkwidgets)")
 
 # --- Opacidad y clipping ---
 opacity_scale = st.sidebar.slider(
-    "Opacidad global", 0.10, 3.00, 1.40, 0.05,
+    "Opacidad global", 0.10, 3.00, 2.50, 0.05,
     help="Controla la densidad visual del volumen. Valores >1.5 para tejido denso."
 )
 isomin = st.sidebar.slider(
@@ -737,24 +726,21 @@ isomax = st.sidebar.slider(
     help="Límite superior de visibilidad. Sube para ver tejido muy denso."
 )
 gradient_opacity = st.sidebar.slider(
-    "Opacidad por gradiente", -5.0, 10.0, 0.0, 0.1,
+    "Opacidad por gradiente", -50.0, 10.0, -10.0, 0.1,
     help="Realza bordes celulares y estructuras de transición. Valores negativos aclaran las caras laterales cortando ruido de base."
 )
 
 # --- Calidad de renderizado ---
-blend_mode = st.sidebar.selectbox(
-    "Modo de Fusión (Blending)",
-    options=["composite", "maximum", "additive", "minimum", "average"],
-    index=0,
-    help="Composite es el ray casting estándar. Maximum ayuda a ver estructuras intensas."
-)
+# Modo de fusión fijado a 'composite' (no editable)
+blend_mode = "composite"
 
 # --- Spacing físico (anisotrópico) ---
 st.sidebar.markdown("#### Spacing físico (micras/voxel)")
-sz = st.sidebar.number_input("Spacing Z", min_value=0.1, max_value=50.0, value=3.0, step=0.1,
-    help="Separación entre slices. Típico H&E: 3-10 µm/slice.")
-sy = st.sidebar.number_input("Spacing Y", min_value=0.1, max_value=10.0, value=1.0, step=0.1)
-sx = st.sidebar.number_input("Spacing X", min_value=0.1, max_value=10.0, value=1.0, step=0.1)
+# Spacing fijado a 1.0 y no editable por el usuario
+sz = st.sidebar.number_input("Spacing Z", min_value=0.1, max_value=50.0, value=1.0, step=0.1, disabled=True,
+    help="Separación entre slices. Fijado a 1 µm/voxel.")
+sy = st.sidebar.number_input("Spacing Y", min_value=0.1, max_value=10.0, value=1.0, step=0.1, disabled=True)
+sx = st.sidebar.number_input("Spacing X", min_value=0.1, max_value=10.0, value=1.0, step=0.1, disabled=True)
 voxel_spacing = (float(sz), float(sy), float(sx))
 
 if isomax <= isomin:
@@ -784,7 +770,7 @@ with st.spinner("Renderizando volumen 3D con PyVista..."):
         isomin=float(isomin),
         isomax=float(isomax),
         opacity_scale=float(opacity_scale),
-        blending_mode=str(blend_mode),
+        blending_mode="composite",
         spacing=voxel_spacing,
         gradient_opacity=float(gradient_opacity)
     )
