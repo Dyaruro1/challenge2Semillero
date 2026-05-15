@@ -282,18 +282,6 @@ def _build_pyvista_plotter(
     isomin: float,
     spacing: tuple[float, float, float],
 ) -> pv.Plotter:
-    """
-    6 caras como quads texturizados con UV consistentes en aristas compartidas.
-
-    Convención de ejes por cara:
-      Z faces  → row=Y, col=X
-      Y faces  → row=Z, col=X
-      X faces  → row=Z, col=Y
-
-    Verificación de arista ejemplo (X=0, Y=0, Z varía):
-      Cara Y=0 col=0 → he_rgb[:,0,0]
-      Cara X=0 col=0 → he_rgb[:,0,0]  ✓
-    """
     z_dim, y_dim, x_dim = he_rgb.shape[:3]
     sz, sy, sx = spacing
     Lz, Ly, Lx = z_dim * sz, y_dim * sy, x_dim * sx
@@ -301,76 +289,48 @@ def _build_pyvista_plotter(
     plotter = pv.Plotter(window_size=[1100, 820], off_screen=True)
     plotter.set_background("#f5f6fb")
 
-    # ─── UV fijos: siempre los mismos 4 puntos en el mismo orden de esquinas ───
-    _FIXED_UV = np.array([
-        [0.0, 1.0],   # esquina 0 → row=0,   col=0   (top-left)
-        [1.0, 1.0],   # esquina 1 → row=0,   col=last(top-right)
-        [1.0, 0.0],   # esquina 2 → row=last,col=last (bot-right)
-        [0.0, 0.0],   # esquina 3 → row=last,col=0   (bot-left)
+    # UV inset: salta el ~2% de píxeles de borde que son fondo blanco.
+    # Esto elimina el borde blanco en aristas SIN tocar la geometría.
+    uv_m = 0.02
+    _INSET_UV = np.array([
+        [uv_m,     1 - uv_m],   # esquina 0 → row=0,    col=0
+        [1 - uv_m, 1 - uv_m],   # esquina 1 → row=0,    col=last
+        [1 - uv_m, uv_m    ],   # esquina 2 → row=last, col=last
+        [uv_m,     uv_m    ],   # esquina 3 → row=last, col=0
     ], dtype=np.float32)
 
-    def _face_quad(
-        img_rgb: np.ndarray,
-        p_r0c0,   # mundo ↔ numpy (row=0,  col=0)
-        p_r0cN,   # mundo ↔ numpy (row=0,  col=last)
-        p_rNcN,   # mundo ↔ numpy (row=last,col=last)
-        p_rNc0,   # mundo ↔ numpy (row=last,col=0)
-    ) -> None:
-        tex  = pv.Texture(np.ascontiguousarray(img_rgb, dtype=np.uint8))
-        mesh = pv.PolyData()
-        mesh.points = np.array([p_r0c0, p_r0cN, p_rNcN, p_rNc0], dtype=float)
-        mesh.faces  = np.array([[4, 0, 1, 2, 3]])
-        mesh.active_texture_coordinates = _FIXED_UV.copy()
-        plotter.add_mesh(mesh, texture=tex, lighting=False, show_edges=False)
-
-    def _pick_slice(
-        arr: np.ndarray,
-        idx: int,
-        axis: int,
-        search_window: int = 30,
-    ) -> np.ndarray:
-        """
-        Busca el slice más rico en tejido dentro de los primeros/últimos
-        `search_window` frames a lo largo de `axis`.
-
-        - idx == 0  → busca en [0, search_window)
-        - idx == -1 → busca en [n-search_window, n)
-
-        El slice con mayor std (mayor varianza de color → más tejido) gana.
-        Esto resuelve tanto caras completamente blancas (std≈0) como caras
-        con señal débil y difusa (std bajo pero > 0).
-        """
+    def _pick_slice(arr, idx, axis, search_window=30):
         n = arr.shape[axis]
         window = min(search_window, n)
-
-        if idx == 0:
-            candidates = range(0, window)
-        else:
-            candidates = range(max(0, n - window), n)
-
+        candidates = range(0, window) if idx == 0 else range(max(0, n - window), n)
         best_idx = int(idx) if idx >= 0 else n + int(idx)
         best_std = -1.0
-
         for i in candidates:
             s = np.take(arr, i, axis=axis)
             std = float(np.std(s.astype(np.float32)))
             if std > best_std:
                 best_std = std
                 best_idx = i
-
         return np.take(arr, best_idx, axis=axis)
 
-    # ── CARA Z=0 (base XY) ──────────────────────────────────────
-    # Image shape: (Y, X, 3) — row=Y-axis, col=X-axis
+    def _face_quad(img_rgb, p_r0c0, p_r0cN, p_rNcN, p_rNc0):
+        tex  = pv.Texture(np.ascontiguousarray(img_rgb, dtype=np.uint8))
+        mesh = pv.PolyData()
+        # Vértices geométricamente exactos — sin eps, sin gap
+        mesh.points = np.array([p_r0c0, p_r0cN, p_rNcN, p_rNc0], dtype=float)
+        mesh.faces  = np.array([[4, 0, 1, 2, 3]])
+        mesh.active_texture_coordinates = _INSET_UV.copy()
+        plotter.add_mesh(mesh, texture=tex, lighting=False, show_edges=False)
+
+    # ── CARA Z=0 ────────────────────────────────────────────────
     _face_quad(
         _pick_slice(he_rgb, 0, axis=0),
-        p_r0c0=[0,   0,  0 ],   # Y=0,  X=0
-        p_r0cN=[Lx,  0,  0 ],   # Y=0,  X=Lx
-        p_rNcN=[Lx,  Ly, 0 ],   # Y=Ly, X=Lx
-        p_rNc0=[0,   Ly, 0 ],   # Y=Ly, X=0
+        p_r0c0=[0,   0,  0 ],
+        p_r0cN=[Lx,  0,  0 ],
+        p_rNcN=[Lx,  Ly, 0 ],
+        p_rNc0=[0,   Ly, 0 ],
     )
-
-    # ── CARA Z=Lz (tapa XY) ─────────────────────────────────────
+    # ── CARA Z=Lz ───────────────────────────────────────────────
     _face_quad(
         _pick_slice(he_rgb, -1, axis=0),
         p_r0c0=[0,   0,  Lz],
@@ -378,18 +338,15 @@ def _build_pyvista_plotter(
         p_rNcN=[Lx,  Ly, Lz],
         p_rNc0=[0,   Ly, Lz],
     )
-
-    # ── CARA Y=0 (frente XZ) ────────────────────────────────────
-    # Image shape: (Z, X, 3) — row=Z-axis, col=X-axis
+    # ── CARA Y=0 ────────────────────────────────────────────────
     _face_quad(
         _pick_slice(he_rgb, 0, axis=1),
-        p_r0c0=[0,  0, 0 ],   # Z=0,  X=0
-        p_r0cN=[Lx, 0, 0 ],   # Z=0,  X=Lx
-        p_rNcN=[Lx, 0, Lz],   # Z=Lz, X=Lx
-        p_rNc0=[0,  0, Lz],   # Z=Lz, X=0
+        p_r0c0=[0,  0, 0 ],
+        p_r0cN=[Lx, 0, 0 ],
+        p_rNcN=[Lx, 0, Lz],
+        p_rNc0=[0,  0, Lz],
     )
-
-    # ── CARA Y=Ly (trasera XZ) ──────────────────────────────────
+    # ── CARA Y=Ly ───────────────────────────────────────────────
     _face_quad(
         _pick_slice(he_rgb, -1, axis=1),
         p_r0c0=[0,  Ly, 0 ],
@@ -397,18 +354,15 @@ def _build_pyvista_plotter(
         p_rNcN=[Lx, Ly, Lz],
         p_rNc0=[0,  Ly, Lz],
     )
-
-    # ── CARA X=0 (izquierda YZ) ─────────────────────────────────
-    # Image shape: (Z, Y, 3) — row=Z-axis, col=Y-axis
+    # ── CARA X=0 ────────────────────────────────────────────────
     _face_quad(
         _pick_slice(he_rgb, 0, axis=2),
-        p_r0c0=[0, 0,  0 ],   # Z=0,  Y=0
-        p_r0cN=[0, Ly, 0 ],   # Z=0,  Y=Ly
-        p_rNcN=[0, Ly, Lz],   # Z=Lz, Y=Ly
-        p_rNc0=[0, 0,  Lz],   # Z=Lz, Y=0
+        p_r0c0=[0, 0,  0 ],
+        p_r0cN=[0, Ly, 0 ],
+        p_rNcN=[0, Ly, Lz],
+        p_rNc0=[0, 0,  Lz],
     )
-
-    # ── CARA X=Lx (derecha YZ) ──────────────────────────────────
+    # ── CARA X=Lx ───────────────────────────────────────────────
     _face_quad(
         _pick_slice(he_rgb, -1, axis=2),
         p_r0c0=[Lx, 0,  0 ],
