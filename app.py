@@ -605,21 +605,29 @@ z_max = vol_shape[0] - 1
 y_max = vol_shape[1] - 1
 x_max = vol_shape[2] - 1
 
+def _centered_range(max_v: int, target: int = 256) -> tuple[int, int]:
+    if max_v <= 0: return (0, 0)
+    if max_v <= target: return (0, max_v)
+    center = max_v // 2
+    return (center - (target // 2), center + (target // 2))
+
 if z_max <= 0:
     z_range = (0, 0)
 else:
-    default_end = min(z_max, 255)
-    z_range = st.sidebar.slider("Rango Z", 0, z_max, (0, default_end))
+    z_default = _centered_range(z_max, target=384)
+    z_range = st.sidebar.slider("Rango Z (Axial)", 0, z_max, z_default)
 
 if y_max <= 0:
     y_range = (0, 0)
 else:
-    y_range = st.sidebar.slider("Rango Y", 0, y_max, (0, y_max))
+    y_default = _centered_range(y_max, target=128)
+    y_range = st.sidebar.slider("Rango Y (Coronal)", 0, y_max, y_default)
 
 if x_max <= 0:
     x_range = (0, 0)
 else:
-    x_range = st.sidebar.slider("Rango X", 0, x_max, (0, x_max))
+    x_default = _centered_range(x_max, target=128)
+    x_range = st.sidebar.slider("Rango X (Sagital)", 0, x_max, x_default)
 
 z_start, z_end = int(z_range[0]), int(z_range[1])
 z_stop = z_end + 1
