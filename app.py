@@ -45,9 +45,40 @@ MAX_RENDER_VOXELS_SAFE = 3_500_000
 HE_CMAP = ["#fcfafa", "#f7dce8", "#e5b0cd", "#b278af", "#4e327a"]
 
 
-st.set_page_config(page_title="H&E 3D Pyramid Viewer", layout="wide")
-st.title("Reconstruccion 3D H&E desde HDF5 piramidal")
-st.caption("PyVista + stpyvista | Canales: s00 (nuclei) y s01 (cyto)")
+st.set_page_config(page_title="H&E 3D Pyramid Viewer", layout="wide", page_icon="🔬")
+
+st.markdown(
+    """
+    <style>
+    /* Diseño general de la página */
+    .main { background-color: #FAFAFA; }
+    h1 { color: #4e327a; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-weight: 700; margin-bottom: -15px; }
+    
+    /* Pestañas (Tabs) más bonitas */
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    .stTabs [data-baseweb="tab"] { background-color: #f0f2f6; border-radius: 8px 8px 0px 0px; padding: 10px 20px; font-weight: 600; transition: background-color 0.3s; color: #333333 !important; }
+    .stTabs [aria-selected="true"] { background-color: #4e327a !important; color: white !important; }
+    
+    /* Sidebar styling */
+    [data-testid="stSidebar"] {
+        background-color: #2b2b36;
+    }
+    [data-testid="stSidebar"] * {
+        color: #ffffff;
+    }
+    
+    /* Esconder elementos innecesarios de Streamlit para más elegancia */
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    div[data-testid="stDecoration"] { visibility: hidden; height: 0; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.title("🔬 Reconstrucción 3D H&E")
+st.markdown("<h4 style='color: #6c757d; font-weight: 400; margin-bottom: 20px;'>Visor de HDF5 Piramidal | Canales: <span style='color: #4e327a; font-weight: bold;'>s00 (nuclei)</span> e <span style='color: #b278af; font-weight: bold;'>s01 (cyto)</span></h4>", unsafe_allow_html=True)
+st.divider()
 
 
 def _collect_datasets(h5_file: h5py.File) -> list[dict[str, Any]]:
@@ -436,10 +467,11 @@ def _load_two_channels_from_bytes(
 
 
 def _source_ui() -> tuple[str | None, bytes | None, str | None]:
-    st.sidebar.header("Fuente HDF5")
+    st.sidebar.markdown("### 📁 1. Fuente de Datos")
+    
     uploaded = st.sidebar.file_uploader("Sube archivo .h5/.hdf5", type=["h5", "hdf5"])
     local_path = st.sidebar.text_input(
-        "O ruta local",
+        "O introduce ruta local",
         value=r"C:\Users\Estudiante\Downloads\data-f0.h5",
     )
 
@@ -499,12 +531,19 @@ if not valid_timepoints:
     st.error("No se encontraron rutas tXXXXX/s00/N/cells y tXXXXX/s01/N/cells compatibles.")
     st.stop()
 
-st.sidebar.header("Seleccion piramidal")
-selected_tp = st.sidebar.selectbox("Timepoint", sorted(valid_timepoints))
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🔍 2. Selección Piramidal")
+selected_tp = st.sidebar.selectbox("⏱️ Timepoint", sorted(valid_timepoints))
 common_levels = sorted(
     set(pyramid[selected_tp]["s00"]).intersection(pyramid[selected_tp]["s01"])
 )
-default_level = 4 if 4 in common_levels else common_levels[0]
+# Validar solamente niveles 0, 1, 2 y 3:
+common_levels = [lvl for lvl in common_levels if lvl <= 3]
+if not common_levels:
+    st.sidebar.error("No hay niveles del 0 al 3 disponibles.")
+    st.stop()
+
+default_level = 3 if 3 in common_levels else common_levels[-1]
 selected_level = st.sidebar.selectbox(
     "Nivel", common_levels, index=common_levels.index(default_level)
 )
@@ -546,9 +585,10 @@ st.caption(
 )
 
 
-st.sidebar.markdown("### Carga subvolumen")
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📦 3. Parámetros de Recorte Muestral")
 downsample_step = st.sidebar.select_slider(
-    "Downsampling",
+    "🔻 Downsampling",
     options=[1, 2, 4],
     value=2,
     help="1 = sin downsampling, 2 y 4 para reducir carga.",
@@ -591,7 +631,7 @@ x_stop = x_end + 1
 extra_axes = cyto_meta["ndim"] - 3
 extra_indices: list[int] = []
 if extra_axes > 0:
-    st.sidebar.markdown("### Ejes extra")
+    st.sidebar.markdown("#### 🧭 Ejes extra")
     for axis in range(extra_axes):
         axis_max = min(int(shape_c[axis]), int(shape_n[axis])) - 1
         val = st.sidebar.number_input(
@@ -676,8 +716,9 @@ if not np.isfinite(cyto_vol).all() or not np.isfinite(nuclei_vol).all():
     nuclei_vol = np.nan_to_num(nuclei_vol, nan=0.0, posinf=0.0, neginf=0.0)
 
 
-st.sidebar.markdown("### Colorizacion H&E")
-auto_he = st.sidebar.checkbox("Auto-ajuste H&E", value=True)
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🎨 4. Control de Tinción H&E")
+auto_he = st.sidebar.checkbox("🚀 Auto-ajuste de Contrastes", value=True)
 
 auto_nuc_t, auto_cyto_t, auto_nuc_n, auto_cyto_n = _auto_falsecolor_params(
     nuclei_vol=nuclei_vol,
@@ -764,11 +805,12 @@ if vmax <= vmin:
 
 p10, p99 = np.percentile(he_scalar_norm, [10, 99])
 
-st.sidebar.markdown("### Render 3D Médico (itkwidgets)")
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🌐 5. Render PyVista 3D")
 
 # --- Opacidad y clipping ---
 isomin = st.sidebar.slider(
-    "Clip mínimo (isomin)", float(vmin), float(vmax), float(p10), 0.005,
+    "🌫️ Ocultar Voxeles Base (Isomin)", float(vmin), float(vmax), float(p10), 0.005,
     help="Voxeles por debajo de este valor son transparentes. El resto será totalmente opaco."
 )
 
@@ -777,24 +819,25 @@ isomin = st.sidebar.slider(
 blend_mode = "composite"
 
 # --- Spacing físico (anisotrópico) ---
-st.sidebar.markdown("#### Spacing físico (micras/voxel)")
+st.sidebar.markdown("#### 📏 Escala Espacial (µm/voxel)")
 # Spacing fijado a 1.0 y no editable por el usuario
-sz = st.sidebar.number_input("Spacing Z", min_value=0.1, max_value=50.0, value=1.0, step=0.1, disabled=True,
+sz = st.sidebar.number_input("Altura Z (µm)", min_value=0.1, max_value=50.0, value=1.0, step=0.1, disabled=True,
     help="Separación entre slices. Fijado a 1 µm/voxel.")
-sy = st.sidebar.number_input("Spacing Y", min_value=0.1, max_value=10.0, value=1.0, step=0.1, disabled=True)
-sx = st.sidebar.number_input("Spacing X", min_value=0.1, max_value=10.0, value=1.0, step=0.1, disabled=True)
+sy = st.sidebar.number_input("Ancho Y (µm)", min_value=0.1, max_value=10.0, value=1.0, step=0.1, disabled=True)
+sx = st.sidebar.number_input("Profundidad X (µm)", min_value=0.1, max_value=10.0, value=1.0, step=0.1, disabled=True)
 voxel_spacing = (float(sz), float(sy), float(sx))
 
 
+# --- Panel principal de métricas ---
+st.markdown("#### 📊 Información del Dataset Dinámico")
 m1, m2, m3 = st.columns(3)
-m1.metric("Shape subvolumen", str(tuple(he_scalar.shape)))
-m2.metric("Voxels", f"{int(np.prod(he_scalar.shape)):,}")
-m3.metric("RAM H&E RGB", _human_bytes(int(he_rgb.nbytes)))
-st.caption(f"Normalizacion robusta H&E escalar: p1={clip_low:.4f}, p99={clip_high:.4f}")
-active_ratio = float((he_scalar_norm > 0.02).mean() * 100.0)
-st.caption(f"Voxels activos (>0.02): {active_ratio:.2f}%")
+m1.metric("📐 Dimensiones (Subvolumen)", str(tuple(he_scalar.shape)))
+m2.metric("🧊 Total de Vóxeles", f"{int(np.prod(he_scalar.shape)):,}")
+m3.metric("💻 Uso de RAM (H&E RGB)", _human_bytes(int(he_rgb.nbytes)))
 
-tab3d, tab2d = st.tabs(["Visualización 3D", "Visualización 2D (Slices)"])
+st.markdown(f"<p style='color: #666; font-size: 0.9em; margin-top: -10px;'>🌟 Voxels activos detectados (>0.02): <b>{float((he_scalar_norm > 0.02).mean() * 100.0):.2f}%</b> <br/>🔧 Rango de señal escalar (p1 - p99): {clip_low:.4f} a {clip_high:.4f}</p>", unsafe_allow_html=True)
+
+tab3d, tab2d = st.tabs(["🧊 Visualización 3D Interactiva", "🖼️ Visualización 2D (Por Slice)"])
 
 with tab3d:
     with st.spinner("Renderizando volumen 3D con PyVista..."):
@@ -824,7 +867,7 @@ with tab3d:
             spacing=voxel_spacing,
         )
 
-    st.success("Renderizando con PyVista WebGL completado. Interactúa directamente en el panel.")
+    st.success("✅ **Renderización completada.** Interactúa con el modelo 3D utilizando el mouse (arrastrar para rotar, rueda para zoom).")
     try:
         html_obj = plotter.export_html(filename=None)
         html_str = html_obj.read() if hasattr(html_obj, "read") else str(html_obj)
@@ -836,9 +879,10 @@ with tab3d:
         st.caption(f"Detalle técnico: {exc}")
 
 with tab2d:
-    st.subheader("Visualizador 2D por Slice")
+    st.markdown("#### 🔬 Explorador de Planos de Corte Múltiple")
+    st.markdown("Visualiza y verifica la alineación celular del volumen reconstruido.")
     
-    axis_choice = st.radio("Eje de corte", options=["Z (Axial)", "Y (Coronal)", "X (Sagital)"], horizontal=True)
+    axis_choice = st.radio("📐 Seleccione Eje de Visualización:", options=["Z (Axial)", "Y (Coronal)", "X (Sagital)"], horizontal=True)
     
     if he_rgb.size > 0:
         if axis_choice.startswith("Z"):
@@ -870,21 +914,21 @@ with tab2d:
                 he_slice = he_rgb[:, :, slice_idx, :]
                 
             c1, c2, c3 = st.columns(3)
-            c1.image(_normalize_uint8(cyto_slice), caption=f"Canal cyto s01 (Slice {axis_name}={slice_idx})", use_container_width=True)
-            c2.image(_normalize_uint8(nuclei_slice), caption=f"Canal nuclei s00 (Slice {axis_name}={slice_idx})", use_container_width=True)
-            c3.image(he_slice, caption=f"FalseColor H&E (Slice {axis_name}={slice_idx})", use_container_width=True)
+            c1.image(_normalize_uint8(cyto_slice), caption=f"🟢 Canal Citoplasma (s01 | Slice {axis_name}={slice_idx})", use_container_width=True)
+            c2.image(_normalize_uint8(nuclei_slice), caption=f"🔵 Canal Núcleos (s00 | Slice {axis_name}={slice_idx})", use_container_width=True)
+            c3.image(he_slice, caption=f"🟣 Reconstrucción H&E (Slice {axis_name}={slice_idx})", use_container_width=True)
         else:
             st.warning("No hay slices disponibles en este eje.")
     else:
         st.warning("Volumen sin datos.")
 
-st.markdown(
+st.divider()
+st.info(
     """
-### Configuracion recomendada (PC modesto)
-- Fuente: ruta local.
-- Nivel piramidal: 4 o superior.
-- Downsampling: 2 (o 1 solo si Z es pequeno).
-- Metodo: slicing.
-- Rango Z inicial: 0-128 o 0-256.
-"""
+    **💡 Consejos para rendimiento óptimo (PC Modesto):**
+    *   **Fuente:** Preferible emplear ruta local para archivos mayores a 1GB.
+    *   **Niveles Piramidales:** Seleccione Nivel 4 o superior para vistas previas.
+    *   **Downsampling (Reducción):** Ajuste a 2, o a 1 únicamente si el número de planos Z es reducido.
+    *   **Rango Z:** Inicie con un rango cerrado (ej. 0-128 o 0-256) antes de cargar el dataset completo.
+    """
 )
