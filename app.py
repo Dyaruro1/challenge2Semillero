@@ -456,7 +456,7 @@ def _source_ui() -> tuple[str | None, bytes | None, str | None]:
     uploaded = st.sidebar.file_uploader("Sube archivo .h5/.hdf5", type=["h5", "hdf5"])
     local_path = st.sidebar.text_input(
         "O ruta local",
-        value=r"C:\Users\Estudiante.DESKTOP-AAS1OV7\Downloads\data-f0.h5",
+        value=r"C:\Users\Estudiante\Downloads\data-f0.h5",
     )
 
     mode: str | None = None
@@ -810,31 +810,70 @@ st.caption(f"Normalizacion robusta H&E escalar: p1={clip_low:.4f}, p99={clip_hig
 active_ratio = float((he_scalar_norm > 0.02).mean() * 100.0)
 st.caption(f"Voxels activos (>0.02): {active_ratio:.2f}%")
 
-preview_idx = he_rgb.shape[0] // 2
-c1, c2, c3 = st.columns(3)
-c1.image(_normalize_uint8(cyto_vol[preview_idx]), caption="Canal cyto s01", use_container_width=True)
-c2.image(_normalize_uint8(nuclei_vol[preview_idx]), caption="Canal nuclei s00", use_container_width=True)
-c3.image(he_rgb[preview_idx], caption="FalseColor H&E", use_container_width=True)
+tab3d, tab2d = st.tabs(["Visualización 3D", "Visualización 2D (Slices)"])
 
+with tab3d:
+    with st.spinner("Renderizando volumen 3D con PyVista..."):
+        plotter = _build_pyvista_plotter(
+            he_scalar=he_scalar_norm,
+            he_rgb=he_rgb,
+            isomin=float(isomin),
+            spacing=voxel_spacing,
+        )
 
-with st.spinner("Renderizando volumen 3D con PyVista..."):
-    plotter = _build_pyvista_plotter(
-        he_scalar=he_scalar_norm,
-        he_rgb=he_rgb,
-        isomin=float(isomin),
-        spacing=voxel_spacing,
-    )
+    st.success("Renderizando con PyVista WebGL completado. Interactúa directamente en el panel.")
+    try:
+        html_obj = plotter.export_html(filename=None)
+        html_str = html_obj.read() if hasattr(html_obj, "read") else str(html_obj)
+        components.html(html_str, height=840)
+    except Exception as exc:
+        st.warning("No se pudo iniciar el WebGL embebido con stpyvista. Fallback a captura estática.")
+        screenshot = plotter.screenshot(return_img=True)
+        st.image(screenshot, caption="Vista estática", use_container_width=True)
+        st.caption(f"Detalle técnico: {exc}")
 
-st.success("Renderizando con PyVista WebGL completado. Interactúa directamente en el panel.")
-try:
-    html_obj = plotter.export_html(filename=None)
-    html_str = html_obj.read() if hasattr(html_obj, "read") else str(html_obj)
-    components.html(html_str, height=840)
-except Exception as exc:
-    st.warning("No se pudo iniciar el WebGL embebido con stpyvista. Fallback a captura estática.")
-    screenshot = plotter.screenshot(return_img=True)
-    st.image(screenshot, caption="Vista estática", use_container_width=True)
-    st.caption(f"Detalle técnico: {exc}")
+with tab2d:
+    st.subheader("Visualizador 2D por Slice")
+    
+    axis_choice = st.radio("Eje de corte", options=["Z (Axial)", "Y (Coronal)", "X (Sagital)"], horizontal=True)
+    
+    if he_rgb.size > 0:
+        if axis_choice.startswith("Z"):
+            axis_idx = 0
+            axis_name = "Z"
+        elif axis_choice.startswith("Y"):
+            axis_idx = 1
+            axis_name = "Y"
+        else:
+            axis_idx = 2
+            axis_name = "X"
+            
+        max_idx = he_rgb.shape[axis_idx] - 1
+        
+        if max_idx >= 0:
+            slice_idx = st.slider(f"Selecciona el Slice ({axis_name})", min_value=0, max_value=max_idx, value=max_idx // 2, key=f"slice_slider_{axis_name}")
+            
+            if axis_idx == 0:
+                cyto_slice = cyto_vol[slice_idx, :, :]
+                nuclei_slice = nuclei_vol[slice_idx, :, :]
+                he_slice = he_rgb[slice_idx, :, :, :]
+            elif axis_idx == 1:
+                cyto_slice = cyto_vol[:, slice_idx, :]
+                nuclei_slice = nuclei_vol[:, slice_idx, :]
+                he_slice = he_rgb[:, slice_idx, :, :]
+            else:
+                cyto_slice = cyto_vol[:, :, slice_idx]
+                nuclei_slice = nuclei_vol[:, :, slice_idx]
+                he_slice = he_rgb[:, :, slice_idx, :]
+                
+            c1, c2, c3 = st.columns(3)
+            c1.image(_normalize_uint8(cyto_slice), caption=f"Canal cyto s01 (Slice {axis_name}={slice_idx})", use_container_width=True)
+            c2.image(_normalize_uint8(nuclei_slice), caption=f"Canal nuclei s00 (Slice {axis_name}={slice_idx})", use_container_width=True)
+            c3.image(he_slice, caption=f"FalseColor H&E (Slice {axis_name}={slice_idx})", use_container_width=True)
+        else:
+            st.warning("No hay slices disponibles en este eje.")
+    else:
+        st.warning("Volumen sin datos.")
 
 st.markdown(
     """
