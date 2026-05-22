@@ -293,29 +293,10 @@ def _build_pyvista_plotter(
     plotter = pv.Plotter(window_size=[1100, 820], off_screen=True)
     plotter.set_background("#f5f6fb")
 
-    # UV inset: salta el ~2% de píxeles de borde que son fondo blanco.
-    # Esto elimina el borde blanco en aristas SIN tocar la geometría.
-    uv_m = 0.02
-    _INSET_UV = np.array([
-        [uv_m,     1 - uv_m],   # esquina 0 → row=0,    col=0
-        [1 - uv_m, 1 - uv_m],   # esquina 1 → row=0,    col=last
-        [1 - uv_m, uv_m    ],   # esquina 2 → row=last, col=last
-        [uv_m,     uv_m    ],   # esquina 3 → row=last, col=0
-    ], dtype=np.float32)
-
-    def _pick_slice(arr, idx, axis, search_window=30):
-        n = arr.shape[axis]
-        window = min(search_window, n)
-        candidates = range(0, window) if idx == 0 else range(max(0, n - window), n)
-        best_idx = int(idx) if idx >= 0 else n + int(idx)
-        best_std = -1.0
-        for i in candidates:
-            s = np.take(arr, i, axis=axis)
-            std = float(np.std(s.astype(np.float32)))
-            if std > best_std:
-                best_std = std
-                best_idx = i
-        return np.take(arr, best_idx, axis=axis)
+    def _pick_slice(arr, idx, axis):
+        # Tomamos exactamente la rebanada del borde para garantizar 
+        # continuidad perfecta (match exacto) en las esquinas del cubo.
+        return np.take(arr, int(idx), axis=axis)
 
     def _face_quad(img_rgb, p_r0c0, p_r0cN, p_rNcN, p_rNc0):
         tex  = pv.Texture(np.ascontiguousarray(img_rgb, dtype=np.uint8))
@@ -323,7 +304,10 @@ def _build_pyvista_plotter(
         # Vértices geométricamente exactos — sin eps, sin gap
         mesh.points = np.array([p_r0c0, p_r0cN, p_rNcN, p_rNc0], dtype=float)
         mesh.faces  = np.array([[4, 0, 1, 2, 3]])
-        mesh.active_texture_coordinates = _INSET_UV.copy()
+        # Usamos coordenadas de textura completas [0, 1] para evitar recortes desalineados
+        mesh.active_texture_coordinates = np.array([
+            [0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]
+        ], dtype=np.float32)
         plotter.add_mesh(mesh, texture=tex, lighting=False, show_edges=False)
 
     # ── CARA Z=0 ────────────────────────────────────────────────
@@ -814,9 +798,28 @@ tab3d, tab2d = st.tabs(["Visualización 3D", "Visualización 2D (Slices)"])
 
 with tab3d:
     with st.spinner("Renderizando volumen 3D con PyVista..."):
+        # Auto-crop para remover "rebanadas" blancas/vacías en los bordes y garantizar continuidad
+        mask = he_scalar_norm > 0.02
+        if mask.any():
+            z_idx, y_idx, x_idx = np.where(mask)
+            z_min, z_max_b = z_idx.min(), z_idx.max()
+            y_min, y_max_b = y_idx.min(), y_idx.max()
+            x_min, x_max_b = x_idx.min(), x_idx.max()
+            
+            # Recortar el volumen al bounding box con un pequeño margen (ej. 1 pixel)
+            z_min = max(0, z_min - 1); z_max_b = min(he_rgb.shape[0] - 1, z_max_b + 1)
+            y_min = max(0, y_min - 1); y_max_b = min(he_rgb.shape[1] - 1, y_max_b + 1)
+            x_min = max(0, x_min - 1); x_max_b = min(he_rgb.shape[2] - 1, x_max_b + 1)
+            
+            he_scalar_crop = he_scalar_norm[z_min:z_max_b+1, y_min:y_max_b+1, x_min:x_max_b+1]
+            he_rgb_crop = he_rgb[z_min:z_max_b+1, y_min:y_max_b+1, x_min:x_max_b+1]
+        else:
+            he_scalar_crop = he_scalar_norm
+            he_rgb_crop = he_rgb
+
         plotter = _build_pyvista_plotter(
-            he_scalar=he_scalar_norm,
-            he_rgb=he_rgb,
+            he_scalar=he_scalar_crop,
+            he_rgb=he_rgb_crop,
             isomin=float(isomin),
             spacing=voxel_spacing,
         )
